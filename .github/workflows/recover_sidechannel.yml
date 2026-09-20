@@ -1,0 +1,259 @@
+name: Recover Side-Channel Lecture
+
+# 手动恢复「声道反相故障」的讲座。
+#
+# 症状：一节有完整回放的课，iCourse Check 日志显示 SenseVoice
+# "0 chars, 0 segments"、Empty transcript, skipping summary，之后永不重试、
+# 不发邮件。根因是该回放人声反相分布在左右声道，ffmpeg 默认 -ac 1
+# 下混 (L+R)/2 把人声抵消（详见 scripts/ffmpeg_side_channel.sh）。
+#
+# 本工作流与日常 iCourse Check 完全相同，只有两点区别：
+#   1. 运行前对指定 sub_id 执行 reset_processed（清空处理/发信标志）；
+#   2. 通过 PATH 前置启用 ffmpeg side-channel wrapper，音频抽取改用
+#      (FL-FR)/2，其余流程（PPT OCR / LLM 总结 / 邮件 / 加密分片推送）
+#      全部走原 pipeline，未改动任何原有代码。
+on:
+  workflow_dispatch:
+    inputs:
+      course_ids:
+        description: "只处理这些课程 ID（逗号分隔），避免重跑其它课程"
+        required: true
+        default: "39173"
+      reset_sub_ids:
+        description: "运行前 reset_processed 的讲座 sub_id（逗号分隔）"
+        required: true
+        default: "660467"
+
+permissions:
+  contents: write
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache Python packages
+        id: cache-pip
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.pythonLocation }}/lib/python*/site-packages
+          key: pip-${{ hashFiles('requirements.txt') }}
+
+      - name: Install Python dependencies
+        if: steps.cache-pip.outputs.cache-hit != 'true'
+        run: pip install -r requirements.txt
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Install side-channel ffmpeg wrapper
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/.wbin"
+          cp scripts/ffmpeg_side_channel.sh "$GITHUB_WORKSPACE/.wbin/ffmpeg"
+          chmod +x "$GITHUB_WORKSPACE/.wbin/ffmpeg"
+          echo "$GITHUB_WORKSPACE/.wbin/ffmpeg -> $(head -n1 "$GITHUB_WORKSPACE/.wbin/ffmpeg")"
+
+      - name: Cache ASR models
+        id: cache-models
+        uses: actions/cache@v4
+        with:
+          path: |
+            sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/
+            silero_vad.onnx
+          key: asr-models-sense-voice-2024-07-17
+
+      - name: Download ASR models
+        if: steps.cache-models.outputs.cache-hit != 'true'
+        run: |
+          wget -q https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2
+          tar xf sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2
+          rm sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2
+          wget -q https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx
+
+      - name: Cache RapidOCR models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/rapidocr
+          key: rapidocr-onnx-default-v1
+
+      - name: Fetch database from data branch
+        run: |
+          mkdir -p data
+          git fetch --depth=1 origin "+refs/heads/data:refs/remotes/origin/data" 2>/dev/null \
+            || { echo "No data branch, starting fresh."; exit 0; }
+          git ls-tree origin/data --name-only data/ | grep -q . \
+            || { echo "No database found on data branch, starting fresh."; exit 0; }
+          files=$(git ls-tree origin/data --name-only data/ | tr '\n' ' ')
+          echo "Data branch files: $files"
+          if echo "$files" | grep -q "icourse-index.enc"; then
+            mkdir -p data/sharded/shards
+            git show origin/data:data/icourse-index.enc > data/sharded/icourse-index.enc
+            shard_paths=$(git ls-tree -r --name-only origin/data | grep '^data/shards/' || true)
+            for path in $shard_paths; do
+              base=$(basename "$path")
+              git show "origin/data:$path" > "data/sharded/shards/$base"
+            done
+            echo "Loaded $(ls data/sharded/shards 2>/dev/null | wc -l) shard(s)."
+          elif echo "$files" | grep -q "icourse.db.gz.enc"; then
+            git show origin/data:data/icourse.db.gz.enc > data/icourse.db.gz.enc
+            echo "Loaded legacy compressed database."
+          elif echo "$files" | grep -q "icourse.db.enc"; then
+            git show origin/data:data/icourse.db.enc > data/icourse.db.enc
+            echo "Loaded legacy uncompressed database."
+          else
+            echo "No database found on data branch, starting fresh."
+          fi
+
+      - name: Decode database
+        if: hashFiles('data/sharded/icourse-index.enc', 'data/icourse.db.gz.enc', 'data/icourse.db.enc') != ''
+        env:
+          STUID: ${{ secrets.STUID }}
+          UISPSW: ${{ secrets.UISPSW }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+        run: |
+          if [ -f data/sharded/icourse-index.enc ]; then
+            python scripts/db_shard.py reassemble data/sharded data/icourse.db
+            echo "Reassembled sharded database."
+            exit 0
+          fi
+          NEW_KEY=$(printf '%s' "ICSv2:${STUID}:${UISPSW}" | sha256sum | cut -d' ' -f1)
+          LEGACY_KEY="${STUID}${UISPSW}${DASHSCOPE_API_KEY}${SMTP_PASSWORD}"
+          decrypt_blob() {
+            local in_path="$1" out_path="$2"
+            if openssl enc -aes-256-cbc -d -pbkdf2 -iter 100000 \
+                 -in "$in_path" -out "$out_path" \
+                 -pass pass:"$NEW_KEY" 2>/dev/null; then
+              echo "v2"; return 0
+            fi
+            if openssl enc -aes-256-cbc -d -pbkdf2 \
+                 -in "$in_path" -out "$out_path" \
+                 -pass pass:"$LEGACY_KEY" 2>/dev/null; then
+              echo "legacy"; return 0
+            fi
+            return 1
+          }
+          if [ -f data/icourse.db.gz.enc ]; then
+            if VER=$(decrypt_blob data/icourse.db.gz.enc data/icourse.db.gz); then
+              gzip -d data/icourse.db.gz
+              echo "Legacy compressed DB decrypted ($VER)."
+            else
+              echo "::warning::Decryption failed. Starting with fresh database."
+              rm -f data/icourse.db data/icourse.db.gz
+            fi
+          elif [ -f data/icourse.db.enc ]; then
+            if VER=$(decrypt_blob data/icourse.db.enc data/icourse.db); then
+              echo "Legacy uncompressed DB decrypted ($VER)."
+            else
+              echo "::warning::Decryption failed. Starting with fresh database."
+              rm -f data/icourse.db
+            fi
+          fi
+
+      - name: Reset processed state for target lectures
+        env:
+          REPAIR_ACTION: reset_processed
+          REPAIR_TARGET: sub_id
+          REPAIR_IDS: ${{ inputs.reset_sub_ids }}
+          REPAIR_APPLY: "1"
+        run: |
+          if [ ! -f data/icourse.db ]; then
+            echo "::error::No decrypted database — cannot reset."
+            exit 1
+          fi
+          python scripts/repair_db.py data/icourse.db
+
+      - name: Record database state
+        id: db-before
+        run: |
+          if [ -f data/icourse.db ]; then
+            echo "hash=$(md5sum data/icourse.db | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          else
+            echo "hash=none" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run
+        timeout-minutes: 350
+        env:
+          StuId: ${{ secrets.STUID }}
+          UISPsw: ${{ secrets.UISPSW }}
+          COURSE_IDS: ${{ inputs.course_ids }}
+          CRAWL_TERM: ${{ secrets.CRAWL_TERM }}
+          SMTP_EMAIL: ${{ secrets.SMTP_EMAIL }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
+          # Explicitly off: never substitute the platform's (garbage)
+          # transcript for a lecture we are re-ASR-ing from the side channel.
+          USE_OFFICIAL_TRANSCRIPT: "0"
+          SECRETS_CONTEXT: ${{ toJSON(secrets) }}
+        run: |
+          chmod +x "$GITHUB_WORKSPACE/.wbin/ffmpeg"
+          export PATH="$GITHUB_WORKSPACE/.wbin:$PATH"
+          echo "ffmpeg resolves to: $(command -v ffmpeg)"
+          eval "$(python scripts/provider_env.py)"
+          unset SECRETS_CONTEXT
+          python -u main.py
+
+      - name: Deploy database to data branch
+        if: always()
+        env:
+          STUID: ${{ secrets.STUID }}
+          UISPSW: ${{ secrets.UISPSW }}
+          COURSE_IDS: ${{ secrets.COURSE_IDS }}
+          SUBSCRIBED_COURSE_IDS: ${{ secrets.COURSE_IDS }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ ! -f data/icourse.db ]; then
+            echo "No database file, skipping."
+            exit 0
+          fi
+          AFTER=$(md5sum data/icourse.db | cut -d' ' -f1)
+          if [ "$AFTER" = "${{ steps.db-before.outputs.hash }}" ]; then
+            echo "Database unchanged, skipping commit."
+            exit 0
+          fi
+          git fetch origin data --depth=1 2>/dev/null || echo "No data branch yet."
+          DEPLOY_DB=data/icourse.db
+          if git rev-parse origin/data >/dev/null 2>&1 && \
+             git cat-file -e origin/data:data/icourse-index.enc 2>/dev/null; then
+            rm -rf data/remote_sharded
+            mkdir -p data/remote_sharded/shards
+            git show origin/data:data/icourse-index.enc > data/remote_sharded/icourse-index.enc
+            shard_paths=$(git ls-tree -r --name-only origin/data | grep '^data/shards/' || true)
+            for path in $shard_paths; do
+              base=$(basename "$path")
+              git show "origin/data:$path" > "data/remote_sharded/shards/$base"
+            done
+            python scripts/db_shard.py reassemble data/remote_sharded data/remote.db
+            echo "Merging local changes into latest remote..."
+            python scripts/merge_db.py data/icourse.db data/remote.db
+            DEPLOY_DB=data/remote.db
+          fi
+          rm -rf data/sharded_out
+          mkdir -p data/sharded_out
+          python scripts/db_shard.py shard "$DEPLOY_DB" data/sharded_out
+          rm -rf /tmp/db_deploy
+          mkdir -p /tmp/db_deploy/data/shards
+          cp data/sharded_out/icourse-index.enc /tmp/db_deploy/data/
+          cp data/sharded_out/shards/*.db.gz.enc /tmp/db_deploy/data/shards/
+          cd /tmp/db_deploy
+          git init -q
+          git checkout -q -b data
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/
+          git commit -q -m "chore: update encrypted database (side-channel recovery)"
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git"
+          git push --force origin data
