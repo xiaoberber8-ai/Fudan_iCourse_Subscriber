@@ -9,9 +9,10 @@ name: Recover Side-Channel Lecture
 #
 # 本工作流与日常 iCourse Check 完全相同，只有两点区别：
 #   1. 运行前对指定 sub_id 执行 reset_processed（清空处理/发信标志）；
-#   2. 通过 PATH 前置启用 ffmpeg side-channel wrapper，音频抽取改用
-#      (FL-FR)/2，其余流程（PPT OCR / LLM 总结 / 邮件 / 加密分片推送）
-#      全部走原 pipeline，未改动任何原有代码。
+#   2. 通过 PATH 前置启用 ffmpeg 自适应声道 wrapper（含 chan_probe.py），
+#      每条音频只开一次签名 URL，本地判定反相后抽取走 (FL-FR)/2，
+#      正常回放保持 (FL+R)/2；其余流程（PPT OCR / LLM 总结 / 邮件 /
+#      加密分片推送）全部走原 pipeline，未改动任何原有代码。
 on:
   workflow_dispatch:
     inputs:
@@ -60,6 +61,7 @@ jobs:
         run: |
           mkdir -p "$GITHUB_WORKSPACE/.wbin"
           cp scripts/ffmpeg_side_channel.sh "$GITHUB_WORKSPACE/.wbin/ffmpeg"
+          cp scripts/chan_probe.py "$GITHUB_WORKSPACE/.wbin/chan_probe.py"
           chmod +x "$GITHUB_WORKSPACE/.wbin/ffmpeg"
           echo "$GITHUB_WORKSPACE/.wbin/ffmpeg -> $(head -n1 "$GITHUB_WORKSPACE/.wbin/ffmpeg")"
 

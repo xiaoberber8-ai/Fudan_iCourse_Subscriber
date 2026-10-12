@@ -3,10 +3,12 @@ name: iCourse Check (adaptive channel)
 # Fork 专用的每日定时检查，替代上游 check.yml（fork 中已通过
 # `gh workflow disable check.yml` 停用其定时触发，避免两个工作流重复处理）。
 #
-# 与 check.yml 的唯一区别：把 scripts/ffmpeg_side_channel.sh 以 PATH
-# wrapper 形式前置。该 wrapper 对每条音频抽取先做 120s 立体声探针，
-# 仅当检测到「人声反相、mid(L+R) 下混会抵消人声」的故障回放时才改用
-# side(L-R) 声道；普通回放（含双单声道）保持原生 mid 行为。
+# 与 check.yml 的唯一区别：把 scripts/ffmpeg_side_channel.sh（配
+# scripts/chan_probe.py）以 PATH wrapper 形式前置。wrapper 对每条音频
+# 只发起一次签名 URL 连接（生产者顺序下载立体声 PCM），在本地用
+# chan_probe.py 分析前 120s：仅当检测到「人声反相、mid(L+R) 下混会
+# 抵消人声」的故障回放时才改用 side(L-R)；普通回放（含双单声道）保持
+# 原生 mid 行为。签名 URL 只允许打开一次，故绝不能做第二次网络请求。
 # 详见 scripts/ffmpeg_side_channel.sh 头部说明。未改动任何原有代码。
 on:
   schedule:
@@ -50,6 +52,7 @@ jobs:
         run: |
           mkdir -p "$GITHUB_WORKSPACE/.wbin"
           cp scripts/ffmpeg_side_channel.sh "$GITHUB_WORKSPACE/.wbin/ffmpeg"
+          cp scripts/chan_probe.py "$GITHUB_WORKSPACE/.wbin/chan_probe.py"
           chmod +x "$GITHUB_WORKSPACE/.wbin/ffmpeg"
           echo "wrapper installed: $(command -v bash)"
 
