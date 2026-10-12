@@ -182,23 +182,30 @@ class Summarizer:
             for p in self.providers
         }
 
+    def _build_user_text(self, title: str, content: str, target: int,
+                         part: int, total_parts: int,
+                         time_range: str | None) -> str:
+        if total_parts <= 1:
+            return (
+                f"以下是课程《{title}》的录音文本与PPT识别内容，"
+                f"你应该输出的字符数大约为{target}字（允许超过，不允许明显短于该目标），"
+                f"请生成详细的复习笔记：\n\n{content}"
+            )
+        span = f"（约 {time_range}）" if time_range else ""
+        return (
+            f"以下是课程《{title}》课堂记录的第 {part}/{total_parts} 部分{span}。"
+            f"请只整理这一部分，输出字符数大约为{target}字（允许超过，不允许明显短于该目标），"
+            f"详尽程度与独立笔记相同，不要写课程总标题、开场客套或结尾总括。内容如下：\n\n{content}"
+        )
+
     def _call_llm(self, client: OpenAI, model: str,
                   title: str, content: str,
                   part: int = 1, total_parts: int = 1,
                   time_range: str | None = None) -> str:
         target = max(800, len(content) // OUTPUT_DIVISOR)
-        if total_parts <= 1:
-            user_text = (
-                f"以下是课程《{title}》的录音文本与PPT识别内容，"
-                f"你应该输出的字符数大约为{target}字，请生成详细的复习笔记：\n\n{content}"
-            )
-        else:
-            span = f"（约 {time_range}）" if time_range else ""
-            user_text = (
-                f"以下是课程《{title}》课堂记录的第 {part}/{total_parts} 部分{span}。"
-                f"请只整理这一部分，输出字符数大约为{target}字，详尽程度与独立笔记相同，"
-                f"不要写课程总标题、开场客套或结尾总括。内容如下：\n\n{content}"
-            )
+        user_text = self._build_user_text(
+            title, content, target, part, total_parts, time_range,
+        )
 
         t0 = time.time()
         response = client.chat.completions.create(
@@ -213,6 +220,42 @@ class Summarizer:
         if not response.choices:
             raise ValueError("API returned empty choices — likely content filter or quota exceeded")
         result = response.choices[0].message.content
+
+        # 长度护栏：模型偶尔无视字数目标、输出过度概括（实测可短至目标的
+        # 2/3 以下）。此时带上原稿要求重写一次；仍不足也接受第二次结果，
+        # 避免无限重试。
+        min_chars = int(target * 0.75)
+        if result and len(result) < min_chars:
+            print(
+                f"[Summarizer] {model} output too short "
+                f"({len(result)} < {min_chars}); requesting an expanded rewrite"
+            )
+            span = f"（约 {time_range}）" if time_range else ""
+            scope = (
+                "该课程" if total_parts <= 1
+                else f"第 {part}/{total_parts} 部分{span}"
+            )
+            expand_text = (
+                f"你刚才为{scope}生成的笔记只有约 {len(result)} 字，"
+                f"明显过于概括，一定遗漏或压缩了原始材料中的定义、公式推导、例题与结论。"
+                f"请严格依据下面的原始材料，重新输出一份完整的详细笔记"
+                f"（不是在旧稿后面简单补几段，而是从头组织、逐知识点展开完整段落），"
+                f"字符数应达到 {target} 字以上。原始材料：\n\n{content}"
+            )
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": expand_text},
+                ],
+                timeout=300,
+            )
+            if not response.choices:
+                raise ValueError("API returned empty choices on expansion retry")
+            expanded = response.choices[0].message.content
+            if expanded and len(expanded) > len(result):
+                result = expanded
+
         elapsed = time.time() - t0
         # Token usage helps explain run cost — every provider's billing is
         # token-based, and rate-limit decisions key off prompt size much
