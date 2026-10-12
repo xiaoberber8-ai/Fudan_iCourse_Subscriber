@@ -1,10 +1,23 @@
 """LLM-based course lecture summarization via ModelScope API."""
 
+import os
+import re
 import time
 
 from openai import OpenAI
 
 from src.runtime import config
+
+# 输出长度目标 ≈ 输入字符数 / 该除数。1:3 的压缩比（原来 1:6）用于产出
+# 覆盖全部知识点的详细复习笔记；可用环境变量临时覆盖。
+OUTPUT_DIVISOR = max(1, int(os.environ.get("SUMMARY_OUTPUT_DIVISOR", "3")))
+# 单次 LLM 调用最多承载多少输入字符；超出则按时段分段多次总结后拼接。
+CHUNK_MAX_CHARS = int(os.environ.get("SUMMARY_CHUNK_MAX_CHARS", "14000"))
+# bucketed 输入中，单次调用最多包含多少个 10 分钟时段桶。
+MAX_BUCKETS_PER_CHUNK = int(os.environ.get("SUMMARY_MAX_BUCKETS", "6"))
+
+# bucketer.assemble_bucketed() 生成的时段分隔行：=== 时间段 mm:ss – mm:ss ===
+_BUCKET_MARK = re.compile(r"^=== 时间段 (.+?) – (.+?) ===\s*$", re.M)
 
 SYSTEM_PROMPT= r"""你是一个专业的课程助教。你的任务是根据用户提供的课程录音文本和ppt文字ocr部分，生成用于学生自学和期末复习的详细笔记。
 1. **直接输出**：不要包含任何"好的"、"没问题"、"以下是总结"等客套话，不要输出全局课程名称大标题（由系统自动生成），直接开始总结即可。
@@ -16,8 +29,11 @@ SYSTEM_PROMPT= r"""你是一个专业的课程助教。你的任务是根据用�
    - 尽可能用完整的段落来组织老师的讲解，适量使用bullet point，不得过度使用bullet point
    - 合理使用加粗、列表、表格、分级标题、段首小标题等形式来组织信息，确保结构清晰。
 4. **公式规范**：所有数学公式或科学变量必须使用规范的 LaTeX 语法（行内公式用 $...$，行间公式用 $$...$$）。由于图床限制，latex公式中不要出现中文。
-5. **忠于原文与详略得当**：总结必须有详有略，总体以详细风格为主，长度适宜或偏长（例如，对于90分钟长度的课程，总结长度应为5000字左右；135分钟的课程，应为8000字左右。输出和输入的长度压缩比例在1:7左右为宜），
-包含具体的推导细节、案例、文献或者核心概念，不要过度概括，也不要仅仅原文复述。禁止捏造录音中未提及的内容。
+5. **忠于原文与详尽**：笔记必须忠实覆盖老师讲授的全部知识点，宁可详尽、不可笼统：
+   - 保留每个核心概念的**完整定义与提出动机**、每个公式中符号的含义与推导的关键步骤（推导链不要跳步）、每个例题/案例的具体设定、数据、结论，以及课程中提到的文献、应用背景、不同方法之间的对比。
+   - 每个知识点都要用完整的自然段展开（是什么、为什么成立、直观含义、适用条件或前提、容易出错的地方），**禁止只用"介绍了 XX""讲解了 XX 的方法"这类一句话概括**，禁止把多个知识点压成一条短句 bullet。
+   - 总体压缩比例约 1:3（输出长度约为输入的三分之一；例如 90 分钟课程约 8000 字，135 分钟课程约 12000 字）。允许写得更长，不要为了压缩而丢弃细节。
+   - 只去除口头禅、重复语句、纯闲聊与识别噪声；严禁捏造录音和 PPT 中都没有提到的内容。
 6. 你需要格外注意课程中是否提及了作业、考试、签到、组队等关键事项，如果有的话，用三级标题【课程事项提醒】标注在开头。
 7. **文风示例**：以下是一个关于"梯度下降"的片段，展示了笔记总结过程中【错误的】和【正确的】的两种总结风格，请严格模仿后者。
 
@@ -65,7 +81,81 @@ SYSTEM_PROMPT= r"""你是一个专业的课程助教。你的任务是根据用�
    - 无论哪种格式，**PPT 文字是真实的板书 / 课件内容**，比音频识别噪声更可靠；遇到音频识别错的术语（同音字、专有名词），优先以 PPT 文字为准修正，但PPT的文字也可能有ocr的错误。
    - 但是，你的总结的组织的主线仍然应该以讲师的讲解为逻辑组织，同时把PPT的信息补充进去。
    - 同时，需要注意的是，由于该平台以屏幕截图的方式记录ppt，因此，尽管我们提供的ocr版本已经尽最大努力进行了清洗，你收到的ppt仍然可能有无关网页、导航栏、桌面或系统页面等无关噪音。这些噪音不应被用于课程内容的总结。
-   - 输出仍按之前的格式要求，不要保留时间戳标签，只把这些信息当作上下文辅助理解，不用说哪些来自转写哪些来自ppt，自然地合并录音转写和ppt中的知识，生成高质量笔记。"""
+   - 输出仍按之前的格式要求，不要保留时间戳标签，只把这些信息当作上下文辅助理解，不用说哪些来自转写哪些来自ppt，自然地合并录音转写和ppt中的知识，生成高质量笔记。
+9. **分段输入时的要求**：长篇课程会被切成多个部分分别提供给你。每次你只会看到课程的**一个部分**，此时只需整理该部分覆盖的内容，保持与独立笔记相同的详尽程度：
+   - 不要输出课程总标题、开场客套或跨部分的结尾总括（拼接工作由系统完成）。
+   - 该部分若提及作业、考试、签到、组队等事项，用三级标题【课程事项提醒】写在**该部分输出的开头**。
+   - 各部分之间内容独立，不要因为"前面/后面可能讲过"而省略本部分的定义、公式和例题。"""
+
+
+def _split_flat(text: str, max_chars: int) -> list[str]:
+    """把平铺文本按段落边界切成不超过 max_chars 的块。"""
+    paras = text.split("\n")
+    chunks: list[str] = []
+    buf: list[str] = []
+    cur = 0
+    for para in paras:
+        piece = para + "\n"
+        if buf and cur + len(piece) > max_chars:
+            chunks.append("\n".join(buf).strip())
+            buf, cur = [], 0
+        # 单个段落超长时硬切，保证有界
+        while len(piece) > max_chars:
+            if buf:
+                chunks.append("\n".join(buf).strip())
+                buf, cur = [], 0
+            chunks.append(piece[:max_chars].strip())
+            piece = piece[max_chars:]
+        if piece.strip():
+            buf.append(piece.rstrip("\n"))
+            cur += len(piece)
+    if buf:
+        chunks.append("\n".join(buf).strip())
+    return [c for c in chunks if c]
+
+
+def split_chunks(content: str,
+                 max_chars: int = CHUNK_MAX_CHARS,
+                 max_buckets: int = MAX_BUCKETS_PER_CHUNK,
+                 ) -> list[tuple[str | None, str]]:
+    """把组装好的提示词切成多次 LLM 调用。
+
+    返回 ``[(time_range, text), ...]``：bucketed 输入按时段桶分组（每块
+    至多 ``max_buckets`` 个 10 分钟桶且不超过 ``max_chars`` 字符），
+    flat 输入在超长时按段落切块。短输入永远只有一块（保持原有单次
+    调用行为）。
+    """
+    markers = list(_BUCKET_MARK.finditer(content))
+    if not markers:
+        if len(content) <= max_chars:
+            return [(None, content)]
+        return [(None, c) for c in _split_flat(content, max_chars)]
+
+    raw: list[tuple[str | None, str]] = []
+    start = 0
+    first = 0
+    for k in range(1, len(markers) + 1):
+        if k == len(markers):
+            rng = f"{markers[first].group(1)} – {markers[k - 1].group(2)}"
+            raw.append((rng, content[start:].strip()))
+            break
+        cur_len = markers[k].start() - start
+        bucket_count = k - first
+        if cur_len > max_chars or bucket_count >= max_buckets:
+            rng = f"{markers[first].group(1)} – {markers[k - 1].group(2)}"
+            raw.append((rng, content[start:markers[k].start()].strip()))
+            start = markers[k].start()
+            first = k
+
+    # 兜底：极端密集的单个桶仍可能超长，对这种块做段落级硬切。
+    out: list[tuple[str | None, str]] = []
+    for rng, text in raw:
+        if len(text) <= max_chars:
+            out.append((rng, text))
+        else:
+            out.extend((rng, c) for c in _split_flat(text, max_chars))
+    return [(rng, t) for rng, t in out if t]
+
 
 class Summarizer:
     """Course lecture summarizer with multi-provider fallback.
@@ -74,6 +164,10 @@ class Summarizer:
     tries each model in declared order. Returns the first successful result.
     Setting only DASHSCOPE_API_KEY still works because the default
     MODEL_PROVIDERS list ships a modelscope entry that reads it.
+
+    Long lectures are split into time-ordered chunks; each chunk is
+    summarized with the same detailed-notes prompt and the results are
+    concatenated, so detail does not get averaged away in one giant call.
     """
 
     def __init__(self):
@@ -89,21 +183,32 @@ class Summarizer:
         }
 
     def _call_llm(self, client: OpenAI, model: str,
-                  title: str, content: str) -> str:
+                  title: str, content: str,
+                  part: int = 1, total_parts: int = 1,
+                  time_range: str | None = None) -> str:
+        target = max(800, len(content) // OUTPUT_DIVISOR)
+        if total_parts <= 1:
+            user_text = (
+                f"以下是课程《{title}》的录音文本与PPT识别内容，"
+                f"你应该输出的字符数大约为{target}字，请生成详细的复习笔记：\n\n{content}"
+            )
+        else:
+            span = f"（约 {time_range}）" if time_range else ""
+            user_text = (
+                f"以下是课程《{title}》课堂记录的第 {part}/{total_parts} 部分{span}。"
+                f"请只整理这一部分，输出字符数大约为{target}字，详尽程度与独立笔记相同，"
+                f"不要写课程总标题、开场客套或结尾总括。内容如下：\n\n{content}"
+            )
+
         t0 = time.time()
         response = client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    # 注意：这里的 1:7 与 system prompt 中声称的 1:8 不一致是有意为之
-                    # （给模型一个略偏长的信号修正其实际输出偏短的倾向），勿"修复"。
-                    "content": f"以下是课程《{title}》的录音文本，根据长度，你应该输出的字符数大约为{len(content) // 6}字，请开始总结：\n\n{content}",
-                },
+                {"role": "user", "content": user_text},
             ],
             # temperature=0.3,
-            timeout=180,
+            timeout=300,
         )
         if not response.choices:
             raise ValueError("API returned empty choices — likely content filter or quota exceeded")
@@ -112,26 +217,32 @@ class Summarizer:
         # Token usage helps explain run cost — every provider's billing is
         # token-based, and rate-limit decisions key off prompt size much
         # more than character count.  Some providers (OpenAI-compatible)
-        # leave usage None on streaming or error paths, so fall back to a
+        # leave usage None on streaming or error paths, so fall back to
         # plain "no usage" line so the summary still prints.
         usage = getattr(response, "usage", None)
+        part_tag = f"part {part}/{total_parts}, " if total_parts > 1 else ""
         if usage is not None:
             print(
-                f"[Summarizer] Done ({model}): "
+                f"[Summarizer] Done ({model}) [{part_tag}"
                 f"{len(content)} chars input → {len(result)} chars output"
                 f" in {elapsed:.0f}s "
                 f"(tokens: prompt={getattr(usage,'prompt_tokens','?')}, "
-                f"completion={getattr(usage,'completion_tokens','?')})"
+                f"completion={getattr(usage,'completion_tokens','?')})]"
             )
         else:
             print(
-                f"[Summarizer] Done ({model}): {len(content)} chars input"
-                f" → {len(result)} chars output in {elapsed:.0f}s"
+                f"[Summarizer] Done ({model}) [{part_tag}"
+                f"{len(content)} chars input → {len(result)} chars output"
+                f" in {elapsed:.0f}s]"
             )
         return result
 
     def summarize(self, title: str, content: str) -> tuple[str, str]:
         """Summarize lecture, trying providers in MODEL_PROVIDERS order.
+
+        Long content is summarized in multiple chunks; a model must finish
+        every chunk to win — on failure the whole lecture falls through to
+        the next configured model.
 
         Returns (summary, model_used) where model_used is "{provider}/{model}".
 
@@ -141,14 +252,29 @@ class Summarizer:
         if not content or not content.strip():
             return ("（内容为空）", "")
 
+        chunks = split_chunks(content)
+        n = len(chunks)
+        print(
+            f"[Summarizer] {title!r}: {len(content)} chars input split "
+            f"into {n} chunk(s) for summarization"
+        )
+
         errors = []
         for provider in self.providers:
             client = self._clients[provider["name"]]
             for model in provider["models"]:
                 model_id = f"{provider['name']}/{model}"
+                parts: list[str] = []
                 try:
-                    result = self._call_llm(client, model, title, content)
-                    return (result, model_id)
+                    for idx, (time_range, chunk) in enumerate(chunks, start=1):
+                        parts.append(
+                            self._call_llm(
+                                client, model, title, chunk,
+                                part=idx, total_parts=n, time_range=time_range,
+                            )
+                        )
+                    return ("\n\n".join(p.strip() for p in parts if p.strip()),
+                            model_id)
                 except Exception as e:
                     print(f"[Summarizer] {model_id} failed: "
                           f"{type(e).__name__}: {e}")

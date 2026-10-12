@@ -31,6 +31,11 @@ Actions (selected via the REPAIR_ACTION env var)
                    pipeline.
   reset_emailed    Sets emailed_at = NULL only.  The next run resends
                    the existing summary without re-processing.
+  reset_summary    Sets summary = summary_model = processed_at =
+                   emailed_at = NULL and clears error counters, while
+                   KEEPING the transcript and PPT OCR.  The next run
+                   regenerates the summary (and re-emails it) from the
+                   already-transcribed material without re-running ASR.
 
 Safety
 ======
@@ -221,6 +226,12 @@ def main() -> None:
         elif action == "reset_emailed":
             _reset(db, where, params, ["emailed_at"],
                    "reset_emailed（仅清空发信标志，用已有总结重发）",
+                   apply)
+        elif action == "reset_summary":
+            _reset(db, where, params,
+                   ["summary", "summary_model",
+                    "processed_at", "emailed_at"],
+                   "reset_summary（清空旧总结与标志，保留转录，重新总结并发信）",
                    apply)
         else:
             print(f"::error::Unknown REPAIR_ACTION: {action!r}",
