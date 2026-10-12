@@ -23,21 +23,63 @@
 #                                                            ▼
 #                                         原命令的 f32le 输出路径/stdout
 #
-# 判据由同目录 chan_probe.py 执行（纯标准库）：0.5s 窗 RMS，高能量窗
-# side>1.8×mid 且 >0.015 才选 side；其余（含 dual-mono 的 side≈0、探针
-# 数据不足、一切异常）保持 mid。判定按输出名缓存。ffmpeg#1 的错误
-# stderr 会透传，保证 403/无音频流等错误仍被原 pipeline 现有逻辑捕获。
+# 判据（本文件内嵌纯标准库 python，不依赖 numpy/外部文件，CI 自带
+# /usr/bin/python3 即可）：0.5s 窗 RMS，高能量窗 side>1.8×mid 且 >0.015
+# 才选 side；其余（含 dual-mono 的 side≈0、探针数据不足、一切异常）
+# 保持 mid。判定按输出名缓存。ffmpeg#1 的错误 stderr 会在其结束后完整
+# 透传，保证 403/无音频流等错误仍被原 pipeline 的现有逻辑捕获。
 # 仅对 `-f f32le` 命令生效，其余透传。
 set -euo pipefail
 
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
-SELF_DIR="$(dirname "$SELF")"
-PROBE="${IC_CHAN_PROBE:-$SELF_DIR/chan_probe.py}"
 
 REAL_FFMPEG="$(which -a ffmpeg 2>/dev/null \
   | while read -r p; do readlink -f "$p"; done \
   | grep -v -F "$SELF" | head -n1 || true)"
 [ -z "$REAL_FFMPEG" ] && REAL_FFMPEG=/usr/bin/ffmpeg
+
+# 判定 16kHz/2ch/float32le PCM 应走 mid 还是 side；stdout 最后一行给结论。
+# 用法: chan_probe <stereo.f32le.raw> [max_bytes]
+chan_probe() {
+  python3 - "$1" "${2:-30720000}" <<'PYEOF'
+import os, sys, struct, math
+path, need = sys.argv[1], int(sys.argv[2])
+WIN = 16000 // 2          # 0.5s 窗
+MIN_FRAMES = 16000 * 5    # 至少 5s 才判定
+with open(path, "rb") as fh:
+    data = fh.read(min(need, os.path.getsize(path)))
+n = len(data) // 8        # 2ch * float32
+if n < MIN_FRAMES:
+    print("mid"); sys.exit(0)
+nwin = n // WIN
+sL = [0.0] * nwin; sR = [0.0] * nwin
+sM = [0.0] * nwin; sS = [0.0] * nwin
+i = 0
+for l, r in struct.iter_unpack("<ff", data[: nwin * WIN * 8]):
+    wno = i // WIN
+    m, s = (l + r) * 0.5, (l - r) * 0.5
+    sL[wno] += l * l; sR[wno] += r * r
+    sM[wno] += m * m; sS[wno] += s * s
+    i += 1
+rms = lambda a: [math.sqrt(x / WIN) for x in a]
+rL, rR, rM, rS = rms(sL), rms(sR), rms(sM), rms(sS)
+content = [max(a, b) for a, b in zip(rL, rR)]
+floor = max(0.01, sorted(content)[len(content) // 2])
+idx = sorted((j for j, c in enumerate(content) if c >= floor),
+             key=lambda j: content[j], reverse=True)
+idx = idx[: max(1, int(len(idx) * 0.4))]
+if not idx:
+    print("mid"); sys.exit(0)
+rm = sum(rM[j] for j in idx) / len(idx)
+rs = sum(rS[j] for j in idx) / len(idx)
+if rs > 1.8 * rm and rs > 0.015:
+    sys.stderr.write("side  (probe RMS mid=%.4f side=%.4f)\n" % (rm, rs))
+    print("side")
+else:
+    sys.stderr.write("mid   (probe RMS mid=%.4f side=%.4f)\n" % (rm, rs))
+    print("mid")
+PYEOF
+}
 
 args=("$@")
 
@@ -159,8 +201,8 @@ fi
 # ── 本地判据（缓存优先；数据不足只对本次运行默认 mid，不落盘） ───────
 mode=""
 [ -f "$mode_file" ] && mode="$(cat "$mode_file" 2>/dev/null || true)"
-if [ -z "$mode" ] && [ "$sz" -ge 1280000 ] && [ -f "$PROBE" ]; then
-  mode="$(python3 "$PROBE" "$stereo" "$NEED" 2>"$diag")" || mode=""
+if [ -z "$mode" ] && [ "$sz" -ge 1280000 ]; then
+  mode="$(chan_probe "$stereo" "$NEED" 2>"$diag")" || mode=""
   cat "$diag" >&2 || true
   if [ -n "$mode" ]; then
     printf '%s' "$mode" > "$mode_file"
