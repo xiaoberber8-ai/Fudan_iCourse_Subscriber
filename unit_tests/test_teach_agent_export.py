@@ -1,4 +1,4 @@
-	©ç¢Ú)zyŞ¶X§’Ê‘ëN¥êÚ¶*'‹iz¹¢¶×	©ç¢Ú)zyŞ¶X§’Ê‘ëN¥êÚ¶*'‹iz¹¢¶×from __future__ import annotations
+from __future__ import annotations
 
 import json
 import sqlite3

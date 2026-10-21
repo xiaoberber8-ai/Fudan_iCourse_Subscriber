@@ -1,4 +1,4 @@
-	©ç¢Ú)zyŞ¶X§’Ê‘ëN¥êÚ¶*'‹iz¹¢¶×	©ç¢Ú)zyŞ¶X§’Ê‘ëN¥êÚ¶*'‹iz¹¢¶×"""Single source of truth for the SQLite schema.
+"""Single source of truth for the SQLite schema.
 
 This module is imported by every Python component that creates or migrates
 the database (Database, sharder, merge_db) so the column list lives in

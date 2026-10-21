@@ -1,4 +1,4 @@
-	©ç¢Ú)zyŞ¶X§’Ê‘ëN¥êÚ¶*'‹iz¹¢¶×	©ç¢Ú)zyŞ¶X§’Ê‘ëN¥êÚ¶*'‹iz¹¢¶×#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Fetch the encrypted data branch and atomically rebuild a local SQLite DB."""
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-	©ç¢Ú)zyŞ¶X§’Ê‘ëN¥êÚ¶*'‹iz¹¢¶×	©ç¢Ú)zyŞ¶X§’Ê‘ëN¥êÚ¶*'‹iz¹¢¶×"""Export processed lectures to the teach_agent LectureInboxEnvelope v1."""
+"""Export processed lectures to the teach_agent LectureInboxEnvelope v1."""
 
 from __future__ import annotations
 

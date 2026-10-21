@@ -1,4 +1,4 @@
-	©ç¢Ú)zyŞ¶X§’Ê‘ëN¥êÚ¶*'‹iz¹¢¶×	©ç¢Ú)zyŞ¶X§’Ê‘ëN¥êÚ¶*'‹iz¹¢¶×"""Per-lecture state machine: prefetch â†’ ASR â†’ OCR drain â†’ summarize â†’ release.
+"""Per-lecture state machine: prefetch â†’ ASR â†’ OCR drain â†’ summarize â†’ release.
 
 One ``LectureRunner`` instance drives one lecture from "started" to either
 "summary saved" or "deliberately skipped".  The class is single-use â€” make a

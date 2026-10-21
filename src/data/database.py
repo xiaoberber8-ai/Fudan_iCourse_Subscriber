@@ -1,4 +1,4 @@
-	©ç¢Ú)zyŞ¶X§’Ê‘ëN¥êÚ¶*'‹iz¹¢¶×	©ç¢Ú)zyŞ¶X§’Ê‘ëN¥êÚ¶*'‹iz¹¢¶×"""SQLite storage for tracking courses and lectures."""
+"""SQLite storage for tracking courses and lectures."""
 
 import os
 import sqlite3

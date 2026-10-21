@@ -1,4 +1,4 @@
-	©ç¢Ú)zyŞ¶X§’Ê‘ëN¥êÚ¶*'‹iz¹¢¶×	©ç¢Ú)zyŞ¶X§’Ê‘ëN¥êÚ¶*'‹iz¹¢¶×"""Shard the SQLite database into encrypted chunks for incremental fetch.
+"""Shard the SQLite database into encrypted chunks for incremental fetch.
 
 WHY SHARD
 =========

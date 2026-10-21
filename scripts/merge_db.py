@@ -1,4 +1,4 @@
-	©ç¢Ú)zyŞ¶X§’Ê‘ëN¥êÚ¶*'‹iz¹¢¶×	©ç¢Ú)zyŞ¶X§’Ê‘ëN¥êÚ¶*'‹iz¹¢¶×#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Merge local DB into remote DB (additive-only).
 
 Used at deploy time to safely combine results from concurrent workflow runs.

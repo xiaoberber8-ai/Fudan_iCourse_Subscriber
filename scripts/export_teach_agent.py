@@ -1,4 +1,4 @@
-	©ç¢Ú)zyŞ¶X§’Ê‘ëN¥êÚ¶*'‹iz¹¢¶×	©ç¢Ú)zyŞ¶X§’Ê‘ëN¥êÚ¶*'‹iz¹¢¶×#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Export new/changed Subscriber lectures into a local teach_agent inbox."""
 
 from __future__ import annotations

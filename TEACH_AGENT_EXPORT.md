@@ -1,4 +1,4 @@
-	©ç¢Ú)zyŞ¶X§’Ê‘ëN¥êÚ¶*'‹iz¹¢¶×	©ç¢Ú)zyŞ¶X§’Ê‘ëN¥êÚ¶*'‹iz¹¢¶×# Local teach_agent export
+# Local teach_agent export
 
 Subscriber can expose completed transcript segments and PPT OCR as
 `LectureInboxEnvelope v1` files without connecting to teach_agent's MySQL.
