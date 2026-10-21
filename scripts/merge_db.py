@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+	©ç¢Ú)zyŞ¶X§’Ê‘ëN¥êÚ¶*'‹iz¹¢¶×	©ç¢Ú)zyŞ¶X§’Ê‘ëN¥êÚ¶*'‹iz¹¢¶×#!/usr/bin/env python3
 """Merge local DB into remote DB (additive-only).
 
 Used at deploy time to safely combine results from concurrent workflow runs.
@@ -123,6 +123,18 @@ def merge(local_path: str, remote_path: str):
                 SELECT sub_id, page_num, created_sec, pptimgurl, text, ocr_status, ocr_at, dhash
                 FROM local.ppt_pages
             """)
+
+            has_segments = conn.execute(
+                "SELECT 1 FROM local.sqlite_master "
+                "WHERE type='table' AND name='transcript_segments'"
+            ).fetchone()
+            if has_segments:
+                conn.execute("""
+                    INSERT OR REPLACE INTO main.transcript_segments
+                        (sub_id, segment_id, start_ms, end_ms, text)
+                    SELECT sub_id, segment_id, start_ms, end_ms, text
+                    FROM local.transcript_segments
+                """)
 
             # 6) all_courses (catalog): upsert local rows into remote.  We take
             #    the side with the newer ``last_seen_at`` so a stale local crawl

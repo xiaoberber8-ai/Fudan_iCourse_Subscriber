@@ -1,4 +1,4 @@
-"""Shard the SQLite database into encrypted chunks for incremental fetch.
+	©Á¢⁄)zyﬁ∂Xßí ëÎN•Í⁄∂*'ûãizπ¢∂◊ù	©Á¢⁄)zyﬁ∂Xßí ëÎN•Í⁄∂*'ûãizπ¢∂◊ù"""Shard the SQLite database into encrypted chunks for incremental fetch.
 
 WHY SHARD
 =========
@@ -372,16 +372,23 @@ def _build_shard_db(source_db: str, course_ids: list[str],
                 (row["course_id"], row["title"], row["teacher"]),
             )
 
-        for table in ("lectures", "ppt_pages"):
+        for table in ("lectures", "ppt_pages", "transcript_segments"):
             if table == "lectures":
                 rows = src.execute(
                     f"SELECT * FROM lectures WHERE course_id IN ({placeholders})",
                     course_ids,
                 ).fetchall()
-            else:
+            elif table == "ppt_pages":
                 rows = src.execute(
                     f"""SELECT pp.* FROM ppt_pages pp
                         JOIN lectures l ON pp.sub_id = l.sub_id
+                        WHERE l.course_id IN ({placeholders})""",
+                    course_ids,
+                ).fetchall()
+            else:
+                rows = src.execute(
+                    f"""SELECT ts.* FROM transcript_segments ts
+                        JOIN lectures l ON ts.sub_id = l.sub_id
                         WHERE l.course_id IN ({placeholders})""",
                     course_ids,
                 ).fetchall()
@@ -620,6 +627,15 @@ def reassemble_database(
                         "INSERT OR IGNORE INTO main.ppt_pages "
                         "SELECT * FROM shard.ppt_pages"
                     )
+                    has_segments = target.execute(
+                        "SELECT 1 FROM shard.sqlite_master "
+                        "WHERE type='table' AND name='transcript_segments'"
+                    ).fetchone()
+                    if has_segments:
+                        target.execute(
+                            "INSERT OR REPLACE INTO main.transcript_segments "
+                            "SELECT * FROM shard.transcript_segments"
+                        )
                     # all_courses and meta are only ever populated in
                     # the meta shard, but INSERT OR IGNORE makes this
                     # safe even if a course-data shard happened to
