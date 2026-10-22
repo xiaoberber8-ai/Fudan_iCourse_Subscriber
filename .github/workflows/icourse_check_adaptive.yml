@@ -10,12 +10,22 @@ name: iCourse Check (adaptive channel)
 # 详见 scripts/ffmpeg_side_channel.sh 头部说明。未改动任何原有代码。
 on:
   schedule:
-    # 与上游相同：每天 UTC 11:36（北京时间 19:36）
-    - cron: "36 11 * * *"
+    # 主运行：每天 UTC 13:17（北京时间 21:17）。避开整点高峰，降低
+    # GitHub schedule 延迟或丢弃的概率。
+    - cron: "17 13 * * *"
+    # 冗余运行：每天 UTC 18:47（北京时间次日 02:47）。处理主运行被
+    # GitHub 延迟/丢弃或录像稍晚发布的情况；数据库状态保证重复运行幂等。
+    - cron: "47 18 * * *"
   workflow_dispatch:
 
 permissions:
   contents: write
+
+# scheduled 与手动运行共用 data 分支。排队而不是取消，避免两个运行同时
+# force-push 加密数据库，或在一半时杀掉正在转录的课程。
+concurrency:
+  group: icourse-subscriber-${{ github.repository }}
+  cancel-in-progress: false
 
 jobs:
   check:
@@ -29,6 +39,19 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Validate configuration
+        env:
+          STUID: ${{ secrets.STUID }}
+          UISPSW: ${{ secrets.UISPSW }}
+          COURSE_IDS: ${{ secrets.COURSE_IDS }}
+          SMTP_EMAIL: ${{ secrets.SMTP_EMAIL }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python scripts/ci_preflight.py
 
       - name: Cache Python packages
         id: cache-pip
@@ -258,3 +281,11 @@ jobs:
           git commit -q -m "chore: update encrypted database (adaptive channel check)"
           git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git"
           git push --force origin data
+
+      - name: Upload run report
+        if: always() && hashFiles('run-report.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: icourse-run-report-${{ github.run_id }}
+          path: run-report.json
+          retention-days: 14
