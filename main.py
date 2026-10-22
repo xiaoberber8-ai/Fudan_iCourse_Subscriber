@@ -22,6 +22,7 @@ from src.api.emailer import Emailer
 from src.api.icourse import ICourseClient
 from src.pipeline.lecture_runner import LectureRunner
 from src.runtime.reporter import Reporter
+from src.runtime.run_report import RunReport
 from src.runtime.scheduler import Scheduler
 from src.ai.summarizer import Summarizer
 from src.ai.transcriber import Transcriber
@@ -68,7 +69,9 @@ def _check_session(client: ICourseClient) -> None:
 
 
 def _enumerate_lectures(client: ICourseClient, db: Database,
-                        reporter: Reporter) -> list[tuple[str, str, dict]]:
+                        reporter: Reporter,
+                        run_report: RunReport | None = None
+                        ) -> list[tuple[str, str, dict]]:
     """Sync, fast: list every (course_id, course_title, lecture) we'll
     process this run.  Done up-front so the prefetch loop can see across
     course boundaries when picking the "next" lecture."""
@@ -138,7 +141,11 @@ def _enumerate_lectures(client: ICourseClient, db: Database,
                     lecture.get("date", ""),
                 )
                 out.append((course_id, course_title, lecture))
-        except Exception:
+            if run_report:
+                run_report.course_checked(course_id)
+        except Exception as exc:
+            if run_report:
+                run_report.course_failed(course_id, exc)
             reporter.course_enumeration_error(course_id)
             traceback.print_exc()
     return out
@@ -197,7 +204,7 @@ def _drive_lectures(client: ICourseClient, db: Database,
 
 
 def _send_email(emailer: Emailer | None, db: Database, reporter: Reporter,
-                email_items: list) -> None:
+                email_items: list) -> bool:
     """Append any previously-processed-but-unsent lectures, then send."""
     unsent = db.get_unsent_lectures()
     if unsent:
@@ -213,17 +220,23 @@ def _send_email(emailer: Emailer | None, db: Database, reporter: Reporter,
                 })
         reporter.email_recovered_unsent(len(unsent))
 
-    if not (emailer and email_items):
-        return
+    if not email_items:
+        return True
+    if not emailer:
+        reporter.email_failed()
+        return False
     try:
         reporter.email_summary(len(email_items))
         if emailer.send(email_items):
             db.mark_emailed_batch([item["sub_id"] for item in email_items])
+            return True
         else:
             reporter.email_failed()
+            return False
     except Exception:
         reporter.info("[Email] Failed to send:")
         traceback.print_exc()
+        return False
 
 
 def _crawl_semester_catalog(client: ICourseClient, db: Database,
@@ -288,9 +301,10 @@ def _crawl_semester_catalog(client: ICourseClient, db: Database,
     reporter.info("Semester catalog crawl complete.")
 
 
-def run():
+def run() -> int:
     """Single execution of the full pipeline."""
     reporter = Reporter()
+    run_report = RunReport(course_ids=list(config.COURSE_IDS))
     reporter.run_header()
 
     if not config.COURSE_IDS and not config.CRAWL_TERM:
@@ -320,13 +334,15 @@ def run():
     if not config.COURSE_IDS:
         # Crawl-only mode: nothing to process, just persist + exit.
         reporter.info("\n[Crawl-only mode] No COURSE_IDS — skipping lectures.")
+        run_report.finalize(db, [], 0, True)
+        run_report.publish()
         reporter.run_footer()
-        return
+        return 0
 
     scheduler = Scheduler(reporter=reporter)
 
     try:
-        all_lectures = _enumerate_lectures(client, db, reporter)
+        all_lectures = _enumerate_lectures(client, db, reporter, run_report)
         _drive_lectures(
             client, db, scheduler, transcriber, summarizer, reporter,
             all_lectures, email_items,
@@ -335,9 +351,17 @@ def run():
     finally:
         scheduler.shutdown()
 
-    _send_email(emailer, db, reporter, email_items)
+    email_sent = _send_email(emailer, db, reporter, email_items)
+    run_report.finalize(
+        db,
+        [str(lecture["sub_id"]) for _, _, lecture in all_lectures],
+        len(email_items),
+        email_sent,
+    )
+    run_report.publish()
     reporter.run_footer()
+    return 0 if run_report.ok else 1
 
 
 if __name__ == "__main__":
-    run()
+    raise SystemExit(run())
