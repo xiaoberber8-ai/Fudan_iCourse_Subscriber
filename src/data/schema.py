@@ -44,6 +44,25 @@ CREATE TABLE IF NOT EXISTS ppt_pages (
 );
 CREATE INDEX IF NOT EXISTS idx_ppt_pages_sub_status
     ON ppt_pages(sub_id, ocr_status);
+CREATE TABLE IF NOT EXISTS transcript_segments (
+    sub_id TEXT NOT NULL,
+    segment_id TEXT NOT NULL,
+    start_ms INTEGER,
+    end_ms INTEGER,
+    text TEXT NOT NULL,
+    PRIMARY KEY (sub_id, segment_id),
+    FOREIGN KEY (sub_id) REFERENCES lectures(sub_id)
+);
+CREATE INDEX IF NOT EXISTS idx_transcript_segments_order
+    ON transcript_segments(sub_id, start_ms, segment_id);
+CREATE TABLE IF NOT EXISTS teach_agent_exports (
+    sub_id TEXT NOT NULL,
+    source_revision TEXT NOT NULL,
+    exported_at TEXT NOT NULL,
+    destination TEXT NOT NULL,
+    PRIMARY KEY (sub_id, source_revision),
+    FOREIGN KEY (sub_id) REFERENCES lectures(sub_id)
+);
 -- ``all_courses`` is the catalog of every course offered by the school in
 -- a given term, regardless of whether the user has subscribed to it.  Used
 -- by the frontend's subscription editor to render a searchable picker;

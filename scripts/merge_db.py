@@ -124,6 +124,18 @@ def merge(local_path: str, remote_path: str):
                 FROM local.ppt_pages
             """)
 
+            has_segments = conn.execute(
+                "SELECT 1 FROM local.sqlite_master "
+                "WHERE type='table' AND name='transcript_segments'"
+            ).fetchone()
+            if has_segments:
+                conn.execute("""
+                    INSERT OR REPLACE INTO main.transcript_segments
+                        (sub_id, segment_id, start_ms, end_ms, text)
+                    SELECT sub_id, segment_id, start_ms, end_ms, text
+                    FROM local.transcript_segments
+                """)
+
             # 6) all_courses (catalog): upsert local rows into remote.  We take
             #    the side with the newer ``last_seen_at`` so a stale local crawl
             #    can't overwrite a fresher remote one.  We deliberately don't

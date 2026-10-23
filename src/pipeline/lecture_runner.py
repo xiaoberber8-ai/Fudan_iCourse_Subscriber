@@ -282,6 +282,7 @@ class LectureRunner:
                         f"({len(text)} chars, {len(official)} segments)"
                     )
                     self._db.update_transcript(sub_id, text)
+                    self._db.replace_transcript_segments(sub_id, official)
                     # The audio may have been prefetched before we knew the
                     # official transcript was usable — stop that download
                     # now instead of letting it run until Phase H.
@@ -347,6 +348,7 @@ class LectureRunner:
             raise
 
         self._db.update_transcript(sub_id, transcript)
+        self._db.replace_transcript_segments(sub_id, segments)
         return transcript, segments
 
     def _summarize(self, sub_id: str, course_title: str, transcript: str,

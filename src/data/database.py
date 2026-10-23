@@ -221,6 +221,47 @@ class Database:
                 (transcript, sub_id),
             )
 
+    def replace_transcript_segments(self, sub_id: str,
+                                    segments: list[dict] | None):
+        """Atomically persist timestamped ASR/official transcript segments."""
+        if not segments:
+            return
+        normalized = []
+        for ordinal, segment in enumerate(segments):
+            text = str(segment.get("text") or "").strip()
+            if not text:
+                continue
+            normalized.append((
+                sub_id,
+                str(segment.get("segment_id") or f"s{ordinal + 1:05d}"),
+                segment.get("start_ms"),
+                segment.get("end_ms"),
+                text,
+            ))
+        if not normalized:
+            return
+        with self._lock, self.conn:
+            self.conn.execute(
+                "DELETE FROM transcript_segments WHERE sub_id = ?", (sub_id,)
+            )
+            self.conn.executemany(
+                """INSERT INTO transcript_segments
+                   (sub_id, segment_id, start_ms, end_ms, text)
+                   VALUES (?, ?, ?, ?, ?)""",
+                normalized,
+            )
+
+    def get_transcript_segments(self, sub_id: str) -> list[dict]:
+        with self._lock:
+            rows = self.conn.execute(
+                """SELECT segment_id, start_ms, end_ms, text
+                   FROM transcript_segments
+                   WHERE sub_id = ?
+                   ORDER BY COALESCE(start_ms, 9223372036854775807), segment_id""",
+                (sub_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def mark_processed(self, sub_id: str):
         with self._lock, self.conn:
             self.conn.execute(
