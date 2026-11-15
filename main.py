@@ -26,33 +26,7 @@ from src.runtime.run_report import RunReport
 from src.runtime.scheduler import Scheduler
 from src.ai.summarizer import Summarizer
 from src.ai.transcriber import Transcriber
-from src.api.webvpn import WebVPNSession
-
-
-def login_with_retry(max_attempts: int = 10) -> WebVPNSession:
-    """Login to WebVPN + iCourse CAS, retrying on transient failures.
-
-    The iCourse CAS step (authenticate_icourse) has its own inner retry
-    loop for transient redirect-chain hiccups; this outer loop only runs
-    when those inner retries are exhausted, which generally means the
-    WebVPN session itself needs a fresh login.  5 attempts handles the
-    long tail of times when CAS rejects multiple fresh sessions in a
-    row before letting one through.
-    """
-    for attempt in range(max_attempts):
-        try:
-            vpn = WebVPNSession()
-            print(f"\n[Login] WebVPN (attempt {attempt + 1}/{max_attempts})...")
-            vpn.login()
-            print("[Login] iCourse CAS...")
-            vpn.authenticate_icourse()
-            return vpn
-        except Exception as e:
-            if attempt < max_attempts - 1:
-                print(f"  Failed: {type(e).__name__}: {e}; retrying...")
-                time.sleep(5)
-            else:
-                raise
+from src.api.webvpn import login_with_retry
 
 
 def _check_session(client: ICourseClient) -> None:
