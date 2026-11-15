@@ -42,6 +42,7 @@ _backup_reencrypted.gz.enc
 docs/*
 !docs/*.png
 !docs/frontend-readme.md
+!docs/ACTIONS_AUTH_TROUBLESHOOTING.md
 docs/specs/
 *.mp3
 bugs.md

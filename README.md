@@ -4,6 +4,9 @@
 
 部署在 GitHub Actions 上，每天定时运行，**零成本、免服务器、全自动**。
 
+遇到 Actions 禁用、CAS 缺少登录令牌或 WebVPN 会话失效，请查看
+[Actions 与学校认证排查说明](docs/ACTIONS_AUTH_TROUBLESHOOTING.md)。
+
 > [!NOTE]
 > 本项目严禁大规模传播（例如，不准分享到树洞、班级群、大群等地），否则信息办可能随时ban掉该项目。
 > 如果该项目对你有用，请点个**star**⭐作为对作者的鼓励，并将项目**单独**分享给你的好朋友。

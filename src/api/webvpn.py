@@ -8,6 +8,7 @@ Handles:
 
 import html as html_mod
 import re
+import time
 from binascii import hexlify, unhexlify
 from urllib.parse import urlparse, urlencode, quote, urljoin
 
@@ -18,6 +19,28 @@ from Crypto.Cipher import PKCS1_v1_5
 import base64
 
 from src.runtime import config
+
+
+class AdditionalAuthenticationRequired(RuntimeError):
+    """The IDP requires a human verification step, not another password attempt."""
+
+
+def _login_token(data: dict, service: str) -> str:
+    if str(data.get("code")) != "200":
+        raise RuntimeError(f"{service} auth failed (code={data.get('code')})")
+    # A successful password check is not necessarily a completed login.
+    # Do not log the response: it contains account details and may contain tokens.
+    if data.get("second") is True:
+        raise AdditionalAuthenticationRequired(
+            f"{service} requires additional authentication (second=true). "
+            "Complete the university's verification in a browser; "
+            "password-only unattended login cannot continue. "
+            "See docs/ACTIONS_AUTH_TROUBLESHOOTING.md."
+        )
+    token = data.get("loginToken")
+    if not token:
+        raise RuntimeError(f"No loginToken in {service} response")
+    return token
 
 
 def encrypt_host(hostname: str) -> str:
@@ -298,14 +321,7 @@ class WebVPNSession:
         )
         data = resp.json()
 
-        if str(data.get("code")) != "200":
-            raise RuntimeError(
-                f"iCourse CAS auth failed (code={data.get('code')})"
-            )
-
-        login_token = data.get("loginToken", "")
-        if not login_token:
-            raise RuntimeError("No loginToken in iCourse CAS response")
+        login_token = _login_token(data, "iCourse CAS")
         print("    loginToken: OK")
 
         # Step 6: Get CAS ticket (through WebVPN)
@@ -357,15 +373,14 @@ class WebVPNSession:
         if resp.status_code == 200:
             try:
                 user_data = resp.json()
-                if user_data.get("code") in (0, 200):
+                if isinstance(user_data, dict) and user_data.get("code") in (0, 200):
                     print("    Verified: login OK")
                     print("[*] iCourse authentication successful!")
                     return True
-            except Exception:
+            except ValueError:
                 pass
 
-        print("    Could not verify iCourse auth via API, proceeding...")
-        return True
+        raise RuntimeError("iCourse authentication could not be verified")
 
     def get(self, url: str, **kwargs) -> requests.Response:
         """GET request through WebVPN. Converts URL automatically."""
@@ -522,15 +537,7 @@ class WebVPNSession:
         )
         data = resp.json()
 
-        if str(data.get("code")) != "200":
-            raise RuntimeError(
-                f"Authentication failed (code={data.get('code')})"
-            )
-
-        # loginToken is at top level, not nested under "data"
-        login_token = data.get("loginToken", "")
-        if not login_token:
-            raise RuntimeError("No loginToken in response")
+        login_token = _login_token(data, "WebVPN")
 
         print("    loginToken: OK")
         return login_token
@@ -573,27 +580,50 @@ class WebVPNSession:
         return ticket_url
 
     def _establish_session(self, ticket_url: str):
-        """Step 7: Follow the ticket URL to establish WebVPN session."""
-        for attempt in range(3):
-            try:
-                resp = self.session.get(
-                    ticket_url, allow_redirects=True, timeout=20
-                )
-                if resp.status_code == 200:
-                    print("    Session established.")
-                    return
+        """Exchange a single-use ticket, then verify the resulting session."""
+        try:
+            resp = self.session.get(
+                ticket_url, allow_redirects=True, timeout=20
+            )
+            if resp.status_code != 200:
                 raise RuntimeError(
                     f"Failed to establish WebVPN session (status={resp.status_code})"
                 )
-            except requests.exceptions.Timeout:
-                has_ticket = any(
-                    "wengine_vpn_ticket" in c.name
-                    for c in self.session.cookies
-                )
-                if has_ticket:
-                    print("    Session cookie set despite timeout.")
-                    return
-                if attempt < 2:
-                    print(f"    Timeout, retrying ({attempt + 2}/3)...")
-                    continue
+        except requests.exceptions.Timeout:
+            # The ticket may already have been consumed. Never replay it;
+            # the outer retry starts a fresh session and obtains a new ticket.
+            if not any("wengine_vpn_ticket" in c.name for c in self.session.cookies):
+                raise RuntimeError(
+                    "WebVPN ticket exchange timed out; start a fresh login"
+                ) from None
+
+        if not any("wengine_vpn_ticket" in c.name for c in self.session.cookies):
+            raise RuntimeError("WebVPN session cookie missing; start a fresh login")
+        portal = self.session.get(
+            config.WEBVPN_BASE + "/", allow_redirects=False, timeout=5,
+        )
+        if portal.status_code != 200:
+            raise RuntimeError("WebVPN session is not authenticated; start a fresh login")
+        print("    Session established and verified.")
+
+
+def login_with_retry(max_attempts: int = 10) -> WebVPNSession:
+    """Retry transient login failures with fresh tickets; stop on human verification."""
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be positive")
+    for attempt in range(max_attempts):
+        try:
+            vpn = WebVPNSession()
+            print(f"\n[Login] WebVPN (attempt {attempt + 1}/{max_attempts})...")
+            vpn.login()
+            print("[Login] iCourse CAS...")
+            vpn.authenticate_icourse()
+            return vpn
+        except AdditionalAuthenticationRequired:
+            raise
+        except Exception as e:
+            if attempt < max_attempts - 1:
+                print(f"  Failed: {type(e).__name__}: {e}; retrying...")
+                time.sleep(5)
+            else:
                 raise
