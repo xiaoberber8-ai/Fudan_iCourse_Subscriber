@@ -35,6 +35,7 @@
 |---|---|---|---|
 | `STUID` | ✅ | 复旦学号 | `22307110000` |
 | `UISPSW` | ✅ | UIS 统一身份认证密码 | `your_password` |
+| `UIS_TOTP_SECRET` | ✅ | UIS 已绑定的 Base32 动态口令密钥（不是六位验证码） | 仅填写在 Secret 中 |
 | `COURSE_IDS` | ✅ | 要监控的课程 ID，多个用英文逗号分隔 | `35472,30251` |
 | `DASHSCOPE_API_KEY` | ⬜ | ModelScope 平台 API Key | `ms-xxxxxxxx` |
 | `DEEPSEEK_API_KEY` | ⬜ | DeepSeek API Key（推荐） | `sk-xxxxxxxx` |
@@ -241,3 +242,17 @@ Schema 迁移：新增列时，旧的 shard 与新的 schema 之间存在列数�
 - **排队论**：DynamicSemaphore 的可调整并发池，系统过载时减少服务窗口，负载下降后恢复。不影响正在服务的 worker，只影响等待队列。
 - **CRDT 思想**：merge_db.py 的 field-level COALESCE，最终一致的并发合并策略。
 - **内容寻址存储**：前端以 git blob SHA 为 shard 缓存键，相同内容产生相同 SHA 的特性直接复用。
+
+
+## UIS 动态口令二次认证
+
+在 [UIS 个人中心](https://id.fudan.edu.cn/uc/) 的账号安全页面完成“动态口令”绑定，
+将绑定时获取的 Base32 密钥保存为 Actions Secret `UIS_TOTP_SECRET`。本地运行时使用同名环境变量。
+不要把临时六位验证码作为密钥，也不要提交绑定二维码或密钥。
+
+密码认证要求 `userAndOtp` 时，程序在同一会话中自动提交 TOTP，再获取 CAS ticket。
+二次认证失败会停止自动密码重试。可手动运行 `UIS TOTP authentication check` 工作流，
+它只验证登录，不抓课程、不调用模型、不发送邮件。
+
+本次仅移植 [原作者提交 506187a9](https://github.com/LeafCreeper/Fudan_iCourse_Subscriber/commit/506187a9fc3bd5dea4b8c8dab3b5aea7144d6fb3)
+的双重认证部分；本 fork 的音轨处理、ASR、OCR、详细总结、邮件和数据库逻辑保持原版。

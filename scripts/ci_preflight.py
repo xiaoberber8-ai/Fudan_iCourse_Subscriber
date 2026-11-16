@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import os
+import base64
+from binascii import Error as Base32Error
 import re
 
 
 REQUIRED = (
     "STUID",
     "UISPSW",
+    "UIS_TOTP_SECRET",
     "COURSE_IDS",
     "SMTP_EMAIL",
     "SMTP_PASSWORD",
@@ -26,6 +29,13 @@ def validate(env: dict[str, str]) -> list[str]:
     missing = [name for name in REQUIRED if not env.get(name, "").strip()]
     if missing:
         errors.append("缺少必需 Secrets: " + ", ".join(missing))
+
+    secret = "".join(env.get("UIS_TOTP_SECRET", "").split()).upper().rstrip("=")
+    if secret:
+        try:
+            base64.b32decode(secret + "=" * (-len(secret) % 8))
+        except (Base32Error, ValueError):
+            errors.append("UIS_TOTP_SECRET 必须是绑定的 Base32 密钥，不是一次性验证码")
 
     course_ids = [
         value.strip()

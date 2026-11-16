@@ -26,7 +26,7 @@ from src.runtime.run_report import RunReport
 from src.runtime.scheduler import Scheduler
 from src.ai.summarizer import Summarizer
 from src.ai.transcriber import Transcriber
-from src.api.webvpn import WebVPNSession
+from src.api.webvpn import WebVPNSession, SecondFactorError
 
 
 def login_with_retry(max_attempts: int = 10) -> WebVPNSession:
@@ -47,6 +47,8 @@ def login_with_retry(max_attempts: int = 10) -> WebVPNSession:
             print("[Login] iCourse CAS...")
             vpn.authenticate_icourse()
             return vpn
+        except SecondFactorError:
+            raise
         except Exception as e:
             if attempt < max_attempts - 1:
                 print(f"  Failed: {type(e).__name__}: {e}; retrying...")

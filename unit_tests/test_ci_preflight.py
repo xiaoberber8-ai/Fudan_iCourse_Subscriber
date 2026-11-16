@@ -8,6 +8,7 @@ class PreflightTests(unittest.TestCase):
         return {
             "STUID": "student",
             "UISPSW": "password",
+            "UIS_TOTP_SECRET": "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
             "COURSE_IDS": "40121,39173",
             "SMTP_EMAIL": "sender@example.com",
             "SMTP_PASSWORD": "smtp-token",
@@ -29,6 +30,13 @@ class PreflightTests(unittest.TestCase):
         errors = validate(env)
         self.assertTrue(any("数字课程 ID" in message for message in errors))
         self.assertTrue(any("重复课程 ID" in message for message in errors))
+
+    def test_rejects_invalid_totp_seed_without_echoing_it(self):
+        env = self.valid_env()
+        env["UIS_TOTP_SECRET"] = "private-invalid-seed"
+        errors = validate(env)
+        self.assertTrue(any("UIS_TOTP_SECRET" in message for message in errors))
+        self.assertNotIn("private-invalid-seed", str(errors))
 
 
 if __name__ == "__main__":
